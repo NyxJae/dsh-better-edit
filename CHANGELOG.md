@@ -1,8 +1,8 @@
-## [Unreleased]
+## [0.8.2](https://github.com/Rianico/dsh-better-edit/compare/v0.8.1...v0.8.2) (2026-09-14)
 
-### Fixed
+### Bug Fixes
 
-- **str-replace:** stamp the sandbox policy on shadow writes (#72)
+* **str-replace:** stamp the sandbox policy on shadow writes ([#72](https://github.com/Rianico/dsh-better-edit/issues/72)) ([1afaa53](https://github.com/Rianico/dsh-better-edit/commit/1afaa53bfd65dbcbebdcffb673a6c3923abc3045))
 
 ## [0.8.1](https://github.com/Rianico/dsh-better-edit/compare/v0.8.0...v0.8.1) (2026-09-11)
 
