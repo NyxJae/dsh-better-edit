@@ -8,11 +8,11 @@
 
 ### Bug Fixes
 
-* **str-replace:** record real fs version so view/read authorizes str_replace/insert ([#70](https://github.com/Rianico/dsh-better-edit/issues/70)) ([06b76ff](https://github.com/Rianico/dsh-better-edit/commit/06b76ffec4c0393f790d2195c06910328b611059))
+- **str-replace:** record real fs version so view/read authorizes str_replace/insert ([#70](https://github.com/Rianico/dsh-better-edit/issues/70)) ([06b76ff](https://github.com/Rianico/dsh-better-edit/commit/06b76ffec4c0393f790d2195c06910328b611059))
 
 ### Documentation
 
-* add PR template and document PR requirements via git scaffolding ([#68](https://github.com/Rianico/dsh-better-edit/issues/68)) ([b341fbc](https://github.com/Rianico/dsh-better-edit/commit/b341fbc778868496bdee2e49801c5cf3745d1c99))
+- add PR template and document PR requirements via git scaffolding ([#68](https://github.com/Rianico/dsh-better-edit/issues/68)) ([b341fbc](https://github.com/Rianico/dsh-better-edit/commit/b341fbc778868496bdee2e49801c5cf3745d1c99))
 
 ## [0.8.0](https://github.com/Rianico/dsh-better-edit/compare/v0.7.1...v0.8.0) (2026-09-09)
 
