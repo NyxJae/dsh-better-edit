@@ -2,7 +2,7 @@
 
 ### Fixed
 
-- **str-replace:** stamp the sandbox policy on shadow writes
+- **str-replace:** stamp the sandbox policy on shadow writes (#72)
 
 ## [0.8.1](https://github.com/Rianico/dsh-better-edit/compare/v0.8.0...v0.8.1) (2026-09-11)
 
