@@ -8,10 +8,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import {
-  normalizeRequest as normReq,
-  assertEditRequest,
-} from "./contract.js";
+import { normalizeRequest as normReq, assertEditRequest } from "./contract.js";
 import { abortIf } from "./utils.js";
 import { execute } from "./mutation.js";
 import { EDIT_DESCRIPTION } from "./prompts.js";
@@ -24,7 +21,9 @@ import { findSnapshotPathsByHashes } from "./hash-store.js";
 import { parseHashRef } from "./hashline/anchor-pipeline.js";
 import type { PreparedItem } from "./edit-engine.js";
 
-async function resolveNullPath(edits: Array<{ remove_from: string; remove_to: string }>): Promise<{ path: string; warning: string } | undefined> {
+async function resolveNullPath(
+  edits: Array<{ remove_from: string; remove_to: string }>,
+): Promise<{ path: string; warning: string } | undefined> {
   if (edits.length === 0) return undefined;
   const first = edits[0]!;
   try {
@@ -38,7 +37,9 @@ async function resolveNullPath(edits: Array<{ remove_from: string; remove_to: st
       };
     }
     if (matches.length > 1) {
-      throw new Error(`[MODEL] [E_BAD_PAYLOAD] Edit request requires a non-empty "path" string; the anchors match multiple known files: ${matches.join(", ")}. Include the intended path.`);
+      throw new Error(
+        `[MODEL] [E_BAD_PAYLOAD] Edit request requires a non-empty "path" string; the anchors match multiple known files: ${matches.join(", ")}. Include the intended path.`,
+      );
     }
   } catch (e) {
     if (codeOf(e) === "E_BAD_PAYLOAD") throw e;
@@ -60,14 +61,73 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
       } as unknown as import("@deepseek-ai/dsh-tools").ValueSchemaSpec & { required?: true },
       edits: {
         type: "array",
-        description: "Ordered list of edit tuples [remove_from, remove_to, replacement_text] — one edit per tuple, single-file atomic",
-        items: { type: "json" as const, description: "[remove_from, remove_to, replacement_text]" } as unknown as import("@deepseek-ai/dsh-tools").ValueSchemaSpec,
+        description:
+          "Ordered list of edit tuples [remove_from, remove_to, replacement_text] — one edit per tuple, single-file atomic",
+        items: {
+          type: "json" as const,
+          description: "[remove_from, remove_to, replacement_text]",
+        } as unknown as import("@deepseek-ai/dsh-tools").ValueSchemaSpec,
       } as unknown as import("@deepseek-ai/dsh-tools").ValueSchemaSpec & { required?: true },
+      result_format: {
+        type: "string",
+        enum: ["text", "structured"],
+        description: "Return textual diff or a typed result for programmatic consumers.",
+      },
       ...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
     },
     output: {
-      schema: { type: "string" },
-      render: (_args, value) => [{ type: "text", text: value }],
+      schema: {
+        oneOf: [
+          { type: "string" },
+          {
+            type: "object",
+            properties: {
+              format: { type: "string", enum: ["structured"], required: true },
+              classification: { type: "string", enum: ["applied", "noop"], required: true },
+              metrics: {
+                type: "object",
+                required: true,
+                properties: {
+                  edits_attempted: { type: "number", required: true },
+                  edits_noop: { type: "number", required: true },
+                  warnings: { type: "number", required: true },
+                  classification: { type: "string", enum: ["applied", "noop"], required: true },
+                  changed_lines: {
+                    type: "object",
+                    properties: {
+                      first: { type: "number", required: true },
+                      last: { type: "number", required: true },
+                    },
+                    additionalProperties: false,
+                  },
+                  added_lines: { type: "number" },
+                  removed_lines: { type: "number" },
+                },
+                additionalProperties: false,
+              },
+              fresh_rows: {
+                type: "array",
+                required: true,
+                items: {
+                  type: "object",
+                  properties: {
+                    line: { type: "number", required: true },
+                    hash: { type: "string", required: true },
+                    content: { type: "string", required: true },
+                  },
+                  additionalProperties: false,
+                },
+              },
+              warnings: { type: "array", items: { type: "string" } },
+              drift_notice: { type: "string" },
+            },
+            additionalProperties: false,
+          },
+        ],
+      },
+      render: (_args, value) => [
+        { type: "text", text: typeof value === "string" ? value : JSON.stringify(value) },
+      ],
     },
     async execute(args, exec) {
       return withWorkspace(execCwd(exec), async () => {
@@ -77,7 +137,13 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 
         const canonical = normReq(args);
         assertEditRequest(canonical);
-        const req = canonical as unknown as { path: string | null; edits: Array<{ remove_from: string; remove_to: string; replacement_text: string }> & { [key: symbol]: unknown } };
+        const req = canonical as unknown as {
+          path: string | null;
+          result_format?: import("./contract.js").EditResultFormat;
+          edits: Array<{ remove_from: string; remove_to: string; replacement_text: string }> & {
+            [key: symbol]: unknown;
+          };
+        };
         let resolvedPath = req.path;
         let pathWarning: string | undefined;
         if (resolvedPath === null) {
@@ -86,7 +152,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
             resolvedPath = resolved.path;
             pathWarning = resolved.warning;
           } else {
-            throw new Error("[MODEL] [E_BAD_PAYLOAD] Edit request path is null and could not be inferred from anchors — anchors match no known file. Include the intended path.");
+            throw new Error(
+              "[MODEL] [E_BAD_PAYLOAD] Edit request path is null and could not be inferred from anchors — anchors match no known file. Include the intended path.",
+            );
           }
         }
         const sandboxPolicy = await sandbox.resolvePolicy(
@@ -110,13 +178,26 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
           });
         }
 
-        // Deep seam: one interface, all lifecycle branching concentrates in Mutation
-        return execute({ io, items, sessionKey, signal, exec, sandbox, sandboxPolicy });
+        return execute({
+          io,
+          items,
+          sessionKey,
+          signal,
+          exec,
+          sandbox,
+          sandboxPolicy,
+          resultFormat: req.result_format ?? "text",
+        });
       });
     },
   });
 }
 
-export function registerEditTool(_rootCtx: Context, agentCtx: Context, io: FileIO, sandbox: FsSandboxController): () => void {
+export function registerEditTool(
+  _rootCtx: Context,
+  agentCtx: Context,
+  io: FileIO,
+  sandbox: FsSandboxController,
+): () => void {
   return agentCtx.tools.register(buildEditTool(io, sandbox));
 }

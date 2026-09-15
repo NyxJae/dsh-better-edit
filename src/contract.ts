@@ -20,9 +20,13 @@ export type EditItem = {
   replacement_text: string;
 };
 
+export type EditResultFormat = "text" | "structured";
+export type ReadFormat = "annotated" | "records";
+
 export type EditRequest = {
   path: string | null;
   edits: EditItem[];
+  result_format?: EditResultFormat;
 };
 
 // legacy single-edit shape retained for mutation.ts internal API
@@ -38,6 +42,7 @@ export interface ReadParams {
   offset?: number;
   limit?: number;
   encoding?: string;
+  format?: ReadFormat;
 }
 
 export interface UndoParams {
@@ -70,7 +75,12 @@ export function isNormalizedEdit(input: unknown): input is NormalizedEditRequest
 export function itemFromTuple(value: unknown): EditItem | undefined {
   if (!Array.isArray(value) || value.length !== 3) return undefined;
   const [remove_from, remove_to, replacement_text] = value as unknown[];
-  if (typeof remove_from !== "string" || typeof remove_to !== "string" || typeof replacement_text !== "string") return undefined;
+  if (
+    typeof remove_from !== "string" ||
+    typeof remove_to !== "string" ||
+    typeof replacement_text !== "string"
+  )
+    return undefined;
   return { remove_from, remove_to, replacement_text };
 }
 
@@ -91,7 +101,11 @@ export function editRequestFrom(input: unknown): NormalizedEditRequest | undefin
     if (sanitized === null) return undefined;
     effectivePath = sanitized;
   }
-  if (effectivePath !== null && (typeof effectivePath !== "string" || (effectivePath as string).length === 0)) return undefined;
+  if (
+    effectivePath !== null &&
+    (typeof effectivePath !== "string" || (effectivePath as string).length === 0)
+  )
+    return undefined;
   if (!Array.isArray(edits) || edits.length === 0) return undefined;
   const items: EditItem[] = [];
   for (const item of edits) {
@@ -99,7 +113,13 @@ export function editRequestFrom(input: unknown): NormalizedEditRequest | undefin
     if (!normalized) return undefined;
     items.push(normalized);
   }
-  return { path: effectivePath as string | null, edits: items };
+  return {
+    path: effectivePath as string | null,
+    edits: items,
+    ...(Object.prototype.hasOwnProperty.call(rec, "result_format")
+      ? { result_format: rec.result_format as EditResultFormat }
+      : {}),
+  };
 }
 
 /**
@@ -109,42 +129,42 @@ export function editRequestFrom(input: unknown): NormalizedEditRequest | undefin
  */
 /** Paired/single bleed wrappers, longest-token first. Each entry strips one layer. */
 const PATH_WRAPPERS: ReadonlyArray<{
-	open: string;
-	close: string;
-	/** Minimum surviving length guard (keeps `"<|>"` alone from vanishing mid-loop). */
-	minLen: number;
-	pairOnly: boolean;
+  open: string;
+  close: string;
+  /** Minimum surviving length guard (keeps `"<|>"` alone from vanishing mid-loop). */
+  minLen: number;
+  pairOnly: boolean;
 }> = [
-	{ open: "<|>", close: "<|>", minLen: 6, pairOnly: false },
-	{ open: "\u2502", close: "\u2502", minLen: 2, pairOnly: true },
-	{ open: "|", close: "|", minLen: 2, pairOnly: true },
-	{ open: '"', close: '"', minLen: 0, pairOnly: true },
-	{ open: "'", close: "'", minLen: 0, pairOnly: true },
-	{ open: "`", close: "`", minLen: 0, pairOnly: true },
+  { open: "<|>", close: "<|>", minLen: 6, pairOnly: false },
+  { open: "\u2502", close: "\u2502", minLen: 2, pairOnly: true },
+  { open: "|", close: "|", minLen: 2, pairOnly: true },
+  { open: '"', close: '"', minLen: 0, pairOnly: true },
+  { open: "'", close: "'", minLen: 0, pairOnly: true },
+  { open: "`", close: "`", minLen: 0, pairOnly: true },
 ];
 
 export function sanitizePath(value: unknown): string | null {
-	if (typeof value !== "string") return null;
-	let cleaned = value.trim();
-	let changed = true;
-	while (changed) {
-		changed = false;
-		for (const w of PATH_WRAPPERS) {
-			if (cleaned.length > w.minLen && cleaned.startsWith(w.open) && cleaned.endsWith(w.close)) {
-				cleaned = cleaned.slice(w.open.length, -w.close.length).trim();
-				changed = true;
-			} else if (!w.pairOnly) {
-				if (cleaned.startsWith(w.open)) {
-					cleaned = cleaned.slice(w.open.length).trim();
-					changed = true;
-				} else if (cleaned.endsWith(w.close)) {
-					cleaned = cleaned.slice(0, -w.close.length).trim();
-					changed = true;
-				}
-			}
-		}
-	}
-	return cleaned.length > 0 ? cleaned : null;
+  if (typeof value !== "string") return null;
+  let cleaned = value.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const w of PATH_WRAPPERS) {
+      if (cleaned.length > w.minLen && cleaned.startsWith(w.open) && cleaned.endsWith(w.close)) {
+        cleaned = cleaned.slice(w.open.length, -w.close.length).trim();
+        changed = true;
+      } else if (!w.pairOnly) {
+        if (cleaned.startsWith(w.open)) {
+          cleaned = cleaned.slice(w.open.length).trim();
+          changed = true;
+        } else if (cleaned.endsWith(w.close)) {
+          cleaned = cleaned.slice(0, -w.close.length).trim();
+          changed = true;
+        }
+      }
+    }
+  }
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 export const EDIT_TUPLE_HINT =
@@ -165,8 +185,8 @@ function describeReceived(input: unknown): string {
 
 // ---- filed sets (declared once) ---------------------------------------------
 
-const EDIT_KS = new Set(["path", "edits", "sandbox_permissions", "justification"]);
-const READ_KS = new Set(["path", "offset", "limit", "encoding"]);
+const EDIT_KS = new Set(["path", "edits", "result_format", "sandbox_permissions", "justification"]);
+const READ_KS = new Set(["path", "offset", "limit", "encoding", "format"]);
 
 // ---- normalization -----------------------------------------------------------
 
@@ -187,7 +207,7 @@ export function normalizeRequest(input: unknown): unknown {
   if (!valid) return record;
   const normalized: Record<string, unknown> = { path: valid.path, edits: valid.edits };
   // preserve non-standard fields like sandbox_permissions/justification for later reject check? but we strip to valid fields and re-add them?
-  for (const k of ["sandbox_permissions", "justification"]) {
+  for (const k of ["sandbox_permissions", "justification", "result_format"]) {
     if (k in record) (normalized as Record<string, unknown>)[k] = record[k];
   }
   Object.defineProperty(normalized, normalizedEdit, { value: true, enumerable: false });
@@ -202,104 +222,164 @@ export function prepareEditArguments(args: unknown): Record<string, unknown> {
   if (valid) {
     return { path: valid.path, edits: (args as Record<string, unknown>).edits };
   }
-  throw new CodedError("E_BAD_PAYLOAD",`[MODEL] [E_BAD_PAYLOAD] ${EDIT_TUPLE_HINT} ${describeReceived(args)}`);
+  throw new CodedError(
+    "E_BAD_PAYLOAD",
+    `[MODEL] [E_BAD_PAYLOAD] ${EDIT_TUPLE_HINT} ${describeReceived(args)}`,
+  );
 }
 
 // ---- assertions ---------------------------------------------------------------
 
 export function assertEditRequest(request: unknown): asserts request is NormalizedEditRequest {
   if (!isNormalizedEdit(request)) {
-    throw new CodedError("E_BAD_PAYLOAD", "[MODEL] [E_BAD_PAYLOAD] Edit request must be exactly { path, edits: [[remove_from, remove_to, replacement_text], ...] }.");
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      "[MODEL] [E_BAD_PAYLOAD] Edit request must be exactly { path, edits: [[remove_from, remove_to, replacement_text], ...] }.",
+    );
   }
   rejectUnknownFields(request as Record<string, unknown>, EDIT_KS, "Edit request");
   const req = request as NormalizedEditRequest;
+  if (
+    req.result_format !== undefined &&
+    req.result_format !== "text" &&
+    req.result_format !== "structured"
+  ) {
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      '[MODEL] [E_BAD_PAYLOAD] result_format must be "text" or "structured".',
+    );
+  }
   if (req.path !== null && (typeof req.path !== "string" || req.path.length === 0)) {
-    throw new CodedError("E_BAD_PAYLOAD", '[MODEL] [E_BAD_PAYLOAD] Edit request path must be a non-empty string or null.');
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      "[MODEL] [E_BAD_PAYLOAD] Edit request path must be a non-empty string or null.",
+    );
   }
   if (!Array.isArray(req.edits) || req.edits.length === 0) {
-    throw new CodedError("E_BAD_PAYLOAD", '[MODEL] [E_BAD_PAYLOAD] Edit request requires a non-empty "edits" array.');
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      '[MODEL] [E_BAD_PAYLOAD] Edit request requires a non-empty "edits" array.',
+    );
   }
   if (req.edits.length > EDITS_MAX_ITEMS) {
-    throw new CodedError("E_BAD_PAYLOAD",`[MODEL] [E_BAD_PAYLOAD] edit accepts at most ${EDITS_MAX_ITEMS} edits; got ${req.edits.length}. Split the batch.`);
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      `[MODEL] [E_BAD_PAYLOAD] edit accepts at most ${EDITS_MAX_ITEMS} edits; got ${req.edits.length}. Split the batch.`,
+    );
   }
   for (let index = 0; index < req.edits.length; index++) {
     const item = req.edits[index]!;
-    if (typeof item.remove_from !== "string" || typeof item.remove_to !== "string" || typeof item.replacement_text !== "string") {
-      throw new CodedError("E_BAD_PAYLOAD",`[MODEL] [E_BAD_PAYLOAD] Edit request edits[${index}] must be a three-position array [remove_from, remove_to, replacement_text].`);
+    if (
+      typeof item.remove_from !== "string" ||
+      typeof item.remove_to !== "string" ||
+      typeof item.replacement_text !== "string"
+    ) {
+      throw new CodedError(
+        "E_BAD_PAYLOAD",
+        `[MODEL] [E_BAD_PAYLOAD] Edit request edits[${index}] must be a three-position array [remove_from, remove_to, replacement_text].`,
+      );
     }
   }
 }
 
 // legacy — now always fails with new shape message (batch_edit removed)
 export function assertBatchEditRequest(_request: unknown): asserts _request is BatchEditParams {
-  throw new CodedError("E_BAD_PAYLOAD", "[MODEL] [E_BAD_PAYLOAD] batch_edit has been removed. Use edit with { path, edits: [[remove_from, remove_to, replacement_text], ...] }.");
+  throw new CodedError(
+    "E_BAD_PAYLOAD",
+    "[MODEL] [E_BAD_PAYLOAD] batch_edit has been removed. Use edit with { path, edits: [[remove_from, remove_to, replacement_text], ...] }.",
+  );
 }
 
 export function assertReadRequest(request: unknown): asserts request is ReadParams {
-  if (!isRec(request)) throw new CodedError("E_BAD_PAYLOAD", "[MODEL] [E_BAD_PAYLOAD] Read request must be an object.");
+  if (!isRec(request))
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      "[MODEL] [E_BAD_PAYLOAD] Read request must be an object.",
+    );
   rejectUnknownFields(request, READ_KS, "Read request");
   if (typeof request.path !== "string" || request.path.length === 0) {
-    throw new CodedError("E_BAD_PAYLOAD", '[MODEL] [E_BAD_PAYLOAD] Read request requires a non-empty "path" string.');
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      '[MODEL] [E_BAD_PAYLOAD] Read request requires a non-empty "path" string.',
+    );
+  }
+  if (
+    request.format !== undefined &&
+    request.format !== "annotated" &&
+    request.format !== "records"
+  ) {
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      '[MODEL] [E_BAD_PAYLOAD] format must be "annotated" or "records".',
+    );
   }
 }
 
 export function assertUndoRequest(request: unknown): asserts request is UndoParams {
-  if (!isRec(request)) throw new CodedError("E_BAD_PAYLOAD", "[MODEL] [E_BAD_PAYLOAD] undo_last_edit request must be an object.");
+  if (!isRec(request))
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      "[MODEL] [E_BAD_PAYLOAD] undo_last_edit request must be an object.",
+    );
   normalizeFilePath(request);
   if (typeof request.path !== "string" || request.path.length === 0) {
-    throw new CodedError("E_BAD_PAYLOAD", '[MODEL] [E_BAD_PAYLOAD] undo_last_edit request requires a non-empty "path" string.');
+    throw new CodedError(
+      "E_BAD_PAYLOAD",
+      '[MODEL] [E_BAD_PAYLOAD] undo_last_edit request requires a non-empty "path" string.',
+    );
   }
 }
 
 // ---- shared JSON Schema literals (co-located with field sets) ---------------
 
 export const replacementTextSchema = {
-  type: 'string',
+  type: "string",
   description: 'Complete replacement for the range; use "" to delete',
-} as const
+} as const;
 
 export const removeFromSchema = {
-  type: 'string',
+  type: "string",
   description: "First line to remove (inclusive)",
-} as const
+} as const;
 
 export const removeToSchema = {
-  type: 'string',
+  type: "string",
   description: "Last line to remove (inclusive)",
-} as const
+} as const;
 
 export const pathSchema = {
-  type: 'string',
+  type: "string",
   description: "File path; null infers it from anchors",
-} as const
+} as const;
 
 export const editPathSchema = {
   anyOf: [
-    { type: 'string', minLength: 1, description: "File path; null infers it from anchors" },
-    { type: 'null', description: "null infers path from anchors" },
+    { type: "string", minLength: 1, description: "File path; null infers it from anchors" },
+    { type: "null", description: "null infers path from anchors" },
   ],
-} as const
+} as const;
 
 export const editTupleSchema = {
-  type: 'array',
+  type: "array",
   prefixItems: [removeFromSchema, removeToSchema, replacementTextSchema],
   minItems: 3,
   maxItems: 3,
   description: "[remove_from, remove_to, replacement_text]",
-} as const
+} as const;
 
 export const editToolSchema = {
-  type: 'object',
+  type: "object",
   additionalProperties: false,
   required: ["path", "edits"] as const,
   properties: {
     path: editPathSchema,
     edits: {
-      type: 'array',
+      type: "array",
       description: "Ordered list of edit tuples",
       minItems: 1,
       maxItems: EDITS_MAX_ITEMS,
       items: editTupleSchema,
     },
+    result_format: { type: "string", enum: ["text", "structured"] },
   },
-} as const
+} as const;

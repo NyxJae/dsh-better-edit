@@ -490,6 +490,7 @@ export async function fmtReadPreview(
   truncation?: TruncationResult;
   nextOffset?: number;
   served: ServedRow[];
+  diagnostics?: string[];
 }> {
   const allLines = visLines(text);
   const totalLines = allLines.length;
@@ -505,15 +506,19 @@ export async function fmtReadPreview(
         served: [{ position: 0, hash: emptyLineHash }],
       };
     }
+    const diagnostic = `Offset ${startLine} is beyond end of file (0 lines total). The file is empty. Use edit to insert content.`;
     return {
-      text: `Offset ${startLine} is beyond end of file (0 lines total). The file is empty. Use edit to insert content.`,
+      text: diagnostic,
       served: [],
+      diagnostics: [diagnostic],
     };
   }
   if (startLine > totalLines) {
+    const diagnostic = `Offset ${startLine} is beyond end of file (${totalLines} lines total). Use offset=1 to read from the start, or offset=${totalLines} to read the last line.`;
     return {
-      text: `Offset ${startLine} is beyond end of file (${totalLines} lines total). Use offset=1 to read from the start, or offset=${totalLines} to read the last line.`,
+      text: diagnostic,
       served: [],
+      diagnostics: [diagnostic],
     };
   }
   const limit = normPosInt(options.limit, 'limit');
@@ -558,6 +563,7 @@ export async function fmtReadPreview(
     const verb = oversized.length === 1 ? 'exceeds' : 'exceed';
     const addresses = oversized.map((row) => `${row.lineNumber}p`).join(';');
     const warning = `[${lineLabel} ${verb} ${formatSize(maxBytes)}; content not shown because hashline anchors require full lines. Inspect with bash: sed -n '${addresses}' <path> | head -c ${maxBytes}]`;
+    let diagnostics: string[] = [warning];
     let preview = skippedTruncation.content;
     let nextOffset: number | undefined;
     if (
@@ -565,9 +571,12 @@ export async function fmtReadPreview(
       (skippedTruncation.truncated || lastShownLine < totalLines)
     ) {
       nextOffset = lastShownLine + 1;
-      preview += `\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
+      const hint = formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined);
+      preview += `\n\n${warning}\n${hint}`;
+      diagnostics = [warning, hint];
     } else {
       preview += `\n\n${warning}`;
+      diagnostics = [warning];
     }
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {
@@ -583,25 +592,33 @@ export async function fmtReadPreview(
       truncation: skippedTruncation.truncated ? skippedTruncation : undefined,
       ...(nextOffset !== undefined ? { nextOffset } : {}),
       served,
+      diagnostics,
     };
   }
   const truncation = truncateHead(formatted, {
     maxBytes,
     maxLines: maxTruncLines,
   });
+  let diagnostics: string[] = [];
   let preview = truncation.content;
   let nextOffset: number | undefined;
   if (truncation.truncated) {
     const endLineDisplay = startLine + truncation.outputLines - 1;
     nextOffset = endLineDisplay + 1;
     if (truncation.truncatedBy === 'lines') {
-      preview += `\n\n${formatPaginationHint(startLine, endLineDisplay, totalLines, nextOffset)}`;
+      const hint = formatPaginationHint(startLine, endLineDisplay, totalLines, nextOffset);
+      preview += `\n\n${hint}`;
+      diagnostics = [hint];
     } else {
-      preview += `\n\n${formatPaginationHint(startLine, endLineDisplay, totalLines, nextOffset, truncation.maxBytes)}`;
+      const hint = formatPaginationHint(startLine, endLineDisplay, totalLines, nextOffset, truncation.maxBytes);
+      preview += `\n\n${hint}`;
+      diagnostics = [hint];
     }
   } else if (endIdx < totalLines) {
     nextOffset = endIdx + 1;
-    preview += `\n\n${formatPaginationHint(startLine, endIdx, totalLines, nextOffset)}`;
+    const hint = formatPaginationHint(startLine, endIdx, totalLines, nextOffset);
+    preview += `\n\n${hint}`;
+    diagnostics = [hint];
   }
   const served: ServedRow[] = [];
   for (let index = 0; index < truncation.outputLines; index++) {
@@ -615,6 +632,7 @@ export async function fmtReadPreview(
     truncation: truncation.truncated ? truncation : undefined,
     ...(nextOffset !== undefined ? { nextOffset } : {}),
     served,
+    ...(diagnostics.length > 0 ? { diagnostics } : {}),
   };
 }
 
@@ -627,6 +645,7 @@ export interface FileView {
   absolutePath: string;
   truncation?: TruncationResult;
   nextOffset?: number;
+  diagnostics?: string[];
   hadUtf8DecodeErrors: boolean;
   bom: string;
   originalEnding: LineEnding;
@@ -675,6 +694,7 @@ export async function readView(
       rawText,
       displayPath: path,
       signal,
+      hadUtf8DecodeErrors: rawText.includes("\uFFFD"),
       maxLines: MAX_HASH_LINES,
       reservedHashes: opts.reservedHashes,
       retiredHashes: opts.retiredHashes,
@@ -692,6 +712,7 @@ export async function readView(
     served: r.served,
     absolutePath,
     truncation: r.truncation,
+    diagnostics: r.diagnostics,
     nextOffset: r.nextOffset,
     hadUtf8DecodeErrors,
     bom,

@@ -86,6 +86,8 @@ const page = await tools.read({
   total_lines: 237,
   next_offset: 101,
   warning?: "..."
+  diagnostics?: string[]
+
 }
 ```
 
@@ -104,11 +106,12 @@ type ReadRecord = {
 - `rows` 只包含本次页面中真正展示并记录为 served 的完整行；禁止返回整个文件的 hashes / normalized 内容。
 - 分页、byte truncation、oversized-line 过滤后的 served 集合必须与 `rows` 使用同一个语义来源，不能先生成 `HASH│content` 再反向 parse。
 - `warning` 继续与文件内容分离，不进入 `content`，也不参与 hash。
+- `diagnostics` 是与 rows 分离的非行诊断列表，用于传递 oversized/truncation、EOF、UTF-8 rewrite 等无法放进 `content` 的说明；它不参与 hash。
 - `next_offset` 表示继续读取下一页时应使用的 1-based offset；没有下一页时省略。
 - `total_lines` 表示完整文件的逻辑总行数。
 - offset 超出 EOF 时保持现有“成功但无可读行”的总体行为，不为了 records 模式引入新的错误协议。
 - 空文件必须继续提供现有“可用于插入内容的 anchor”能力。records 下的精确表示需要以当前空文件测试为基线锁定；实现时优先保持 anchor 能力，而不是为了表面上的 `rows=[]` 破坏后续 edit。
-- 超大单行如果当前逻辑不能安全 serve，则 records 也不能伪造一个可编辑 hash。必要说明留在 metadata / warning，而不是把截断内容伪装成完整 `content`。
+- 超大单行如果当前逻辑不能安全 serve，则 records 也不能伪造一个可编辑 hash。必要说明留在 `diagnostics` / `warning`，而不是把截断内容伪装成完整 `content`。
 
 ### 4.4 实现边界
 
@@ -304,8 +307,10 @@ await tools.edit({ ..., result_format: "structured" })
 - 分页的 `total_lines` / `next_offset` 正确。
 - records 中只有真正 served 的完整行。
 - warning 不混入 rows/content。
+- diagnostics 保留 oversized/truncation、EOF、UTF-8 rewrite 等非行诊断。
 - 空文件保持可插入 anchor 能力。
 - oversized line / truncation 不制造无效可编辑 anchor。
+- annotated/records output schema 分支具有正确的必填字段约束。
 
 ### `edit`
 
