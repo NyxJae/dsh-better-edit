@@ -5,6 +5,7 @@ A DeepSeek Harness (`dsh`) plugin: hashline-anchored `read`/`edit`/`undo_last_ed
 ## Working with Git
 
 Prefer issues + pull requests. See `CONTRIBUTING.md` for Conventional Commits (commitlint + husky) and `Closes #NN` convention.
+
 ### Runtime
 
 TypeScript: pnpm v12 + .nvmrc (24) + TS v7 + Vite v8, verify via oxlint/oxfmt/tsc/vitest; see package.json
@@ -12,6 +13,8 @@ TypeScript: pnpm v12 + .nvmrc (24) + TS v7 + Vite v8, verify via oxlint/oxfmt/ts
 ## Upstream sync — absorbing pi-better-edit
 
 Upstream: <https://github.com/Rianico/pi-better-edit> — local checkout `../pi-better-edit` if present; add remote when needed: `git remote add upstream https://github.com/Rianico/pi-better-edit.git`.
+
+Parent fork: <https://github.com/Rianico/dsh-better-edit> — `origin` is the personal fork `NyxJae/dsh-better-edit`; the `upstream` remote tracks the parent. The parent fork carries its own release line (0.8.x) and is absorbed by merge like any other upstream; see `docs/absorption-plan.md` § Sync 2026-09-15.
 
 Last absorbed checkpoint: `87a17ebf14a1d980015b721a4fc7082d4c3b9635` (2026-09-05 — v1.6.0; absorbed as #45–#48 via absorb/t1-audience, t2-drift-canon, t3-gemma, t4-epoch). Previous: `7b9195851037623484fe2840d081dab09f9f29d1` (2026-08-21 — fix: dense post-edit servedRows, post-v1.1.4). Previous checkpoint `c1f080048cc28c6b9cc5bb7ede2f3f572dc8b450` (v1.1.4) was absorbed from base `6a9cefca6c6e7011f5a20f058f9e17e3375419da` (1.1.3) as `v0.3.0` via `absorb/t1`–`t7` worktrees (54 commits, ADRs 0002–0004 + payload break). Next absorb starts from `87a17eb..HEAD` (or `87a17eb..upstream/main`) — inspected `87a17eb..01a6255` (2026-09-06 `01a6255099666b105fb783f93175add17469ba18` chore(ci) scaffold sync) — scaffold/CI only, no semantic changes; cursor stays at `87a17eb` (scaffold/CI ignored by design, see `docs/absorption-plan.md`).
 
@@ -27,6 +30,7 @@ Procedure — repeat every sync and record the new hash here:
 
 Checkpoint history (newest first):
 
+- 2026-09-15 — `9af0535..68f7fe4` (parent fork `dsh-better-edit` 0.7.1 → 0.8.2, 12 commits) — merged `upstream/main@68f7fe4` into `local-use`; 7 files / 24 hunks resolved as additive union. Brought #66 object-form edit entries, #67 governed `str_replace_editor` shadow (ADR-0015), #70/#72 shadow fixes. pi cursor unchanged at `87a17eb`.
 - 2026-09-05 — `7b9195851..87a17eb` (v1.2.1 → v1.6.0, 64 commits) — absorbed as #45 (audience split + code renames, dd1a779), #46 (canon-deficit drift, 95c4703), #47 (Gemma bleed hardening, e67f493), #48 (epoch full-read gating, 3918292); v1.4.0/v1.5.0 arch deepening + scaffold/CI ignored by design (see docs/absorption-plan.md).
 - 2026-08-21 — `7b9195851037623484fe2840d081dab09f9f29d1` — fix: dense post-edit servedRows to keep chained edits verifiable (1 commit post-v1.1.4) — absorbed as 0.3.x fix.
 - 2026-08-20 — `6a9cefca6c6e7011f5a20f058f9e17e3375419da` → `c1f080048cc28c6b9cc5bb7ede2f3f572dc8b450` (v1.1.4, 54 commits) — absorbed as `v0.3.0` via `absorb/t1-canon` … `absorb/t7-integration` (see `docs/absorption-plan.md`, ADRs 0002–0004, 0007–0008).
@@ -46,3 +50,8 @@ The five canonical triage labels: `needs-triage`, `needs-info`, `ready-for-agent
 ### Domain docs
 
 Single-context — one `CONTEXT.md` plus `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Contribution
+
+Conventional commits & changelog: see CONTRIBUTING.md
+Git hooks: `git config core.hooksPath .githooks` (or `npm install` with husky → `.husky` delegates to `.githooks`) so pre-push CHANGELOG guard is live on fresh clone/worktree.

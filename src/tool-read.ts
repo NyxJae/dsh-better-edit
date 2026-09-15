@@ -15,6 +15,7 @@ import { READ_DESCRIPTION } from "./prompts.js";
 import { normalizeEncoding } from "./encoding.js";
 
 import type { FileIO } from "./fs-bridge.js";
+import { renderTextWarning } from "./render-text-warning.js";
 import { execCwd, execSessionKey } from "./workspace-context.js";
 import { withWorkspace } from "./workspace-context.js";
 type AnnotatedReadResult = { text: string; warning?: string };
@@ -76,10 +77,9 @@ function renderReadResult(_args: unknown, value: unknown) {
     if (warning) blocks.push({ type: "text", text: warning });
     return blocks;
   }
-  const annotated = v as AnnotatedReadResult;
-  const blocks: Array<{ type: "text"; text: string }> = [{ type: "text", text: annotated.text }];
-  if (annotated.warning) blocks.push({ type: "text", text: annotated.warning });
-  return blocks;
+  // Annotated (and bare-string) values go through the shared render seam so
+  // `read` and `str_replace_editor` view stay parity-equal (report #7).
+  return renderTextWarning(value as { text: string; warning?: string } | string);
 }
 
 const READ_OUTPUT = { schema: READ_OUTPUT_SCHEMA, render: renderReadResult };

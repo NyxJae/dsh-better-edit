@@ -85,16 +85,9 @@ export interface FileIO {
    * read, so the policy records that this session has seen the file.
    * @param exec - the calling execution; carries the session the policy keys by.
    */
-  emitObserved(
-    absolutePath: string,
-    exec?: ToolExecution,
-    signal?: AbortSignal,
-  ): Promise<void>;
+  emitObserved(absolutePath: string, exec?: ToolExecution, signal?: AbortSignal): Promise<void>;
   /** Opaque change-version for snapshot bookkeeping, or undefined when unavailable. */
-  statVersion(
-    absolutePath: string,
-    signal?: AbortSignal,
-  ): Promise<string | undefined>;
+  statVersion(absolutePath: string, signal?: AbortSignal): Promise<string | undefined>;
 }
 
 /**
@@ -105,10 +98,7 @@ export interface FileIO {
  * @returns the mapped error, rethrown.
  */
 export function mapFsError(error: unknown, displayPath: string): never {
-  if (
-    error instanceof Error &&
-    typeof (error as { code?: unknown }).code === "string"
-  ) {
+  if (error instanceof Error && typeof (error as { code?: unknown }).code === "string") {
     const code = (error as unknown as { code: string }).code;
     if (code === "FS_NOT_FOUND") {
       throw new Error(`[MODEL] [E_NOT_FOUND] File not found: ${displayPath}`);
@@ -122,10 +112,14 @@ export function mapFsError(error: unknown, displayPath: string): never {
       );
     }
     if (code === "FS_BAD_ENCODING") {
-      throw new Error(`[E_BAD_ENCODING] Unknown encoding for ${displayPath}. Supported: utf8, gbk, big5, shift_jis, euc-kr, windows-1251, iso-8859-1`);
+      throw new Error(
+        `[E_BAD_ENCODING] Unknown encoding for ${displayPath}. Supported: utf8, gbk, big5, shift_jis, euc-kr, windows-1251, iso-8859-1`,
+      );
     }
     if (code === "FS_DECODE_FAILED") {
-      throw new Error(`[E_DECODE_FAILED] Bytes in ${displayPath} cannot be decoded with requested encoding.`);
+      throw new Error(
+        `[E_DECODE_FAILED] Bytes in ${displayPath} cannot be decoded with requested encoding.`,
+      );
     }
     if (code === "FS_STALE_VERSION") {
       throw new Error(
@@ -165,15 +159,18 @@ async function restoreStrippedUtf8Bom(
   target: FsTarget,
   text: string,
   signal?: AbortSignal,
-): Promise<string> {
-  if (text.startsWith(UTF8_BOM)) return text;
+): Promise<{ text: string; version: string | undefined }> {
+  // BOM already preserved: one metadata stat for the read-first gate version
+  // (issue #69). No byte probe here — readBytes stays forbidden in this branch.
+  if (text.startsWith(UTF8_BOM)) {
+    const info = await fs.stat(target, signal).catch(() => undefined);
+    return { text, version: info?.version as string | undefined };
+  }
 
   const info = await fs.stat(target, signal);
-  if (
-    info?.size === undefined ||
-    info.size !== Buffer.byteLength(text, "utf-8") + UTF8_BOM_LEN
-  ) {
-    return text;
+  const version = info?.version as string | undefined;
+  if (info?.size === undefined || info.size !== Buffer.byteLength(text, "utf-8") + UTF8_BOM_LEN) {
+    return { text, version };
   }
 
   const bytes = await fs.readBytes(target, signal, info.size);
@@ -184,12 +181,12 @@ async function restoreStrippedUtf8Bom(
     bytes[1] !== UTF8_BOM_BYTES[1] ||
     bytes[2] !== UTF8_BOM_BYTES[2]
   ) {
-    return text;
+    return { text, version };
   }
   for (let i = 0; i < encodedText.length; i += 1) {
-    if (bytes[i + UTF8_BOM_LEN] !== encodedText[i]) return text;
+    if (bytes[i + UTF8_BOM_LEN] !== encodedText[i]) return { text, version };
   }
-  return `${UTF8_BOM}${text}`;
+  return { text: `${UTF8_BOM}${text}`, version };
 }
 
 /** FileIO over the deployment's `ctx.fs` service. */
@@ -205,15 +202,42 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
     async readText(absolutePath, signal, encodingHint?: string) {
       // explicit encoding override (Reopen with Encoding) — bytes + seam
       if (encodingHint) {
-        const target = await fs.resolve(absolutePath, { ...(signal === undefined ? {} : { signal }) });
+        const target = await fs.resolve(absolutePath, {
+          ...(signal === undefined ? {} : { signal }),
+        });
         const info = await fs.stat(target, signal);
         const maxBytes = info?.size ?? 10 * 1024 * 1024;
         const bytes = await fs.readBytes(target, signal, maxBytes);
         const cfg = loadConfig();
-        const decoded = await decodeForOpen(bytes, cfg, { encodingHint, displayPath: absolutePath });
-        const targetKey = String((target as unknown as { targetKey?: string }).targetKey ?? absolutePath);
-        recordOpenState(targetKey, decoded.text, decoded.encoding, decoded.hasBOM, info?.version as string | undefined);
-        if (decoded.footer) recordFooter(targetKey, decoded.footer);
+        const decoded = await decodeForOpen(bytes, cfg, {
+          encodingHint,
+          displayPath: absolutePath,
+        });
+        const targetKey = String(
+          (target as unknown as { targetKey?: string }).targetKey ?? absolutePath,
+        );
+        recordOpenState(
+          targetKey,
+          decoded.text,
+          decoded.encoding,
+          decoded.hasBOM,
+          info?.version as string | undefined,
+        );
+        // Gate looks up by resolved absolutePath; targetKey may differ
+        // (symlink/case) — mirror under both keys (issue #69 note).
+        if (targetKey !== absolutePath) {
+          recordOpenState(
+            absolutePath,
+            decoded.text,
+            decoded.encoding,
+            decoded.hasBOM,
+            info?.version as string | undefined,
+          );
+        }
+        if (decoded.footer) {
+          recordFooter(targetKey, decoded.footer);
+          if (targetKey !== absolutePath) recordFooter(absolutePath, decoded.footer);
+        }
         return decoded.text;
       }
 
@@ -222,37 +246,66 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
           ...(signal === undefined ? {} : { signal }),
         });
         const text = await fs.readText(target, signal);
-        const restored = await restoreStrippedUtf8Bom(fs, target, text, signal);
+        // Thread the restore path's stat version into the encoding memo so the
+        // read-first gate validates against the real version (issue #69 fix 2).
+        // The BOM-preserved branch stats for version only — no byte probe.
+        const { text: restored, version } = await restoreStrippedUtf8Bom(fs, target, text, signal);
         // record file encoding state for round-trip (BOM + lineEnding)
-        // Do not probe fs.stat when BOM is already preserved — keep the no-probe guarantee
-        // tested in fs-bridge.policy.test.ts (keeps a BOM already preserved without probing)
         try {
-          const targetKey = String((target as unknown as { targetKey?: string }).targetKey ?? absolutePath);
+          const targetKey = String(
+            (target as unknown as { targetKey?: string }).targetKey ?? absolutePath,
+          );
           const hasBOM = restored.startsWith(UTF8_BOM);
           const clean = hasBOM ? restored.slice(1) : restored;
-          // use seam to record with correct lineEnding detection; version left undefined
-          // to avoid extra stat (the success path must stay probe-free when BOM preserved)
-          recordOpenState(targetKey, clean, hasBOM ? "utf8bom" : "utf8", hasBOM, undefined);
+          // use seam to record with correct lineEnding detection
+          recordOpenState(targetKey, clean, hasBOM ? "utf8bom" : "utf8", hasBOM, version);
+          if (targetKey !== absolutePath) {
+            recordOpenState(absolutePath, clean, hasBOM ? "utf8bom" : "utf8", hasBOM, version);
+          }
           // clear any stale autoGuess footer on clean UTF-8 read
           _clearAutoGuessFooter(targetKey);
+          if (targetKey !== absolutePath) _clearAutoGuessFooter(absolutePath);
         } catch {
           // best-effort
         }
         return restored;
       } catch (error) {
-        const isNotText = error instanceof Error && (error as unknown as { code?: string }).code === "FS_NOT_TEXT";
+        const isNotText =
+          error instanceof Error && (error as unknown as { code?: string }).code === "FS_NOT_TEXT";
         if (isNotText) {
           const cfg = loadConfig();
-          const target = await fs.resolve(absolutePath, { ...(signal === undefined ? {} : { signal }) });
+          const target = await fs.resolve(absolutePath, {
+            ...(signal === undefined ? {} : { signal }),
+          });
           const info = await fs.stat(target, signal);
           const maxBytes = info?.size ?? 10 * 1024 * 1024;
           if (info && info.size !== undefined && info.size > maxBytes) throw error;
           const bytes = await fs.readBytes(target, signal, maxBytes);
-          const targetKey = String((target as unknown as { targetKey?: string }).targetKey ?? absolutePath);
+          const targetKey = String(
+            (target as unknown as { targetKey?: string }).targetKey ?? absolutePath,
+          );
           // Delegate deterministic admission to the deep seam
           const decoded = await decodeForOpen(bytes, cfg, { displayPath: absolutePath });
-          recordOpenState(targetKey, decoded.text, decoded.encoding, decoded.hasBOM, info?.version as string | undefined);
-          if (decoded.footer) recordFooter(targetKey, decoded.footer);
+          recordOpenState(
+            targetKey,
+            decoded.text,
+            decoded.encoding,
+            decoded.hasBOM,
+            info?.version as string | undefined,
+          );
+          if (targetKey !== absolutePath) {
+            recordOpenState(
+              absolutePath,
+              decoded.text,
+              decoded.encoding,
+              decoded.hasBOM,
+              info?.version as string | undefined,
+            );
+          }
+          if (decoded.footer) {
+            recordFooter(targetKey, decoded.footer);
+            if (targetKey !== absolutePath) recordFooter(absolutePath, decoded.footer);
+          }
           return decoded.text;
         }
         return mapFsError(error, absolutePath);
@@ -261,28 +314,31 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
     async writeText(absolutePath, content, signal, exec, sandboxPolicy) {
       // handle drift invalidation before encode — seam owns version check
       try {
-        const targetTmp = await fs.resolve(absolutePath, { ...(signal === undefined ? {} : { signal }) });
-        const key = String((targetTmp as unknown as { targetKey?: string }).targetKey ?? absolutePath);
+        const targetTmp = await fs.resolve(absolutePath, {
+          ...(signal === undefined ? {} : { signal }),
+        });
+        const key = String(
+          (targetTmp as unknown as { targetKey?: string }).targetKey ?? absolutePath,
+        );
         const info = await fs.stat(targetTmp, signal).catch(() => undefined);
         invalidateIfStale(key, info?.version as string | undefined);
+        if (key !== absolutePath)
+          invalidateIfStale(absolutePath, info?.version as string | undefined);
       } catch {} // biome-ignore: best-effort
 
       try {
         const target = await fs.resolve(absolutePath, {
           ...(signal === undefined ? {} : { signal }),
         });
-        const intent = await ctx.waterfall(
-          "fs/write-intent",
-          target,
-          exec,
-          () => undefined,
-        );
+        const intent = await ctx.waterfall("fs/write-intent", target, exec, () => undefined);
         // Seam owns Save-with-Encoding memo update and normalizeToUtf8 check.
         // Provider expects UTF-8 string; for legacy without normalize we keep
         // string as-is (next read re-detects via version bump).
         try {
           const cfgW = loadConfig();
-          const key = String((target as unknown as { targetKey?: string }).targetKey ?? absolutePath);
+          const key = String(
+            (target as unknown as { targetKey?: string }).targetKey ?? absolutePath,
+          );
           // Honor manual override if content was produced via write({encoding}) — not wired here,
           // encodingHint is not part of writeText signature for ctxFsIO in current call sites.
           // Check existing memo for legacy preservation.
@@ -292,19 +348,8 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
           if (prep.newState) _setEncodingState(key, prep.newState as FileEncodingState);
           // content stays as UTF-8 string for provider; prep.textToWrite is same as content
         } catch {} // biome-ignore: best-effort
-        const outcome = await fs.writeText(
-          target,
-          content,
-          intent,
-          signal,
-          sandboxPolicy,
-        );
-        ctx.emit(
-          "fs/observed",
-          target,
-          { kind: "present", version: outcome.version },
-          exec,
-        );
+        const outcome = await fs.writeText(target, content, intent, signal, sandboxPolicy);
+        ctx.emit("fs/observed", target, { kind: "present", version: outcome.version }, exec);
       } catch (error) {
         return mapFsError(error, absolutePath);
       }
@@ -316,12 +361,7 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
         });
         const info = await fs.stat(target, signal);
         if (info !== undefined) {
-          ctx.emit(
-            "fs/observed",
-            target,
-            { kind: "present", version: info.version },
-            exec,
-          );
+          ctx.emit("fs/observed", target, { kind: "present", version: info.version }, exec);
         }
       } catch (error) {
         console.error(
@@ -354,9 +394,18 @@ export function localIO(): FileIO {
       if (encodingHint) {
         const bytes = await readFile(absolutePath);
         const cfg = loadConfig();
-        const decoded = await decodeForOpen(bytes, cfg, { encodingHint, displayPath: absolutePath });
+        const decoded = await decodeForOpen(bytes, cfg, {
+          encodingHint,
+          displayPath: absolutePath,
+        });
         const info = await fileSnap(absolutePath).catch(() => undefined);
-        recordOpenState(absolutePath, decoded.text, decoded.encoding, decoded.hasBOM, info?.snapshotId);
+        recordOpenState(
+          absolutePath,
+          decoded.text,
+          decoded.encoding,
+          decoded.hasBOM,
+          info?.snapshotId,
+        );
         if (decoded.footer) recordFooter(absolutePath, decoded.footer);
         return decoded.text;
       }
@@ -366,7 +415,13 @@ export function localIO(): FileIO {
         const cfgL = loadConfig();
         const decoded = await decodeForOpen(bytes, cfgL, { displayPath: absolutePath });
         const info = await fileSnap(absolutePath).catch(() => undefined);
-        recordOpenState(absolutePath, decoded.text, decoded.encoding, decoded.hasBOM, info?.snapshotId);
+        recordOpenState(
+          absolutePath,
+          decoded.text,
+          decoded.encoding,
+          decoded.hasBOM,
+          info?.snapshotId,
+        );
         if (decoded.footer) recordFooter(absolutePath, decoded.footer);
         return decoded.text;
       } catch (error) {
